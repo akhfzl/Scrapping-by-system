@@ -6,8 +6,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from dotenv import load_dotenv
 import json, os
 import time
+
+load_dotenv()
 
 
 def SettingSelenium():
@@ -31,8 +34,8 @@ def Autentication(driver, wait, link):
     email_input = wait.until(EC.presence_of_element_located((By.NAME, "username")))
     password_input = wait.until(EC.presence_of_element_located((By.NAME, "password")))
 
-    email_input.send_keys(os.getenv('email'))
-    password_input.send_keys(os.getenv('password'))
+    email_input.send_keys(os.getenv('EMAIL'))
+    password_input.send_keys(os.getenv('PASSWORD'))
     time.sleep(1)
 
     submit_button = wait.until(EC.presence_of_element_located((By.ID, "kt_sign_in_submit")))
@@ -66,17 +69,20 @@ def CollectLinkDetail(driver, wait, count_pages):
     for page in range(count_pages):
         wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a.btn-detail")))
         tombol_detail = driver.find_elements(By.CSS_SELECTOR, "a.btn-detail")
-        for tombol in tombol_detail:
+        judul_kelas = driver.find_elements(By.CSS_SELECTOR, "h5.mt-0")
+        
+        for tombol, judul in zip(tombol_detail, judul_kelas):
             href = tombol.get_attribute("href")
+            judul_txt = judul.text  
             if href:
-                overal_link.append(href)
+                overal_link.append({"judul": judul_txt, "url": href})
 
         print(f"Halaman {page + 1} selesai. Total link: {len(overal_link)}")
 
         if page < count_pages - 1:
             try:
                 tombol_next = wait.until(EC.element_to_be_clickable((By.ID, "table-kelas_next")))
-                if "disabled" in tombol_next.get_attribute("class"):
+                if "disabled" in tombol_next.get_attribute("class") or not tombol_next.is_enabled():
                     print("<STOP> Tombol next nonaktif.")
                     break
                 tombol_next.click()
@@ -108,7 +114,7 @@ def OpenFeedbackTab(driver, wait):
         print("X Tab feedback tidak ditemukan.")
 
 
-def SubTopicAll(driver, wait):
+def SubTopicAll(driver, wait, judul):
     comment_found = []
     accordion_buttons = driver.find_elements(By.CSS_SELECTOR, '.accordion-button')
 
@@ -135,7 +141,16 @@ def SubTopicAll(driver, wait):
                     if len(ps) >= 2:
                         komentar = ps[1].text.strip()
                         if komentar:
-                            comment_found.append(komentar)
+                            comment_found.append({
+                                'user_statement': komentar, 
+                                'judul': judul, 
+                                'rating': '', 
+                                'type': 'komentar/pertanyaan',
+                                "kategori": "Smartclass",
+                                "pusat_inovasi": "Semua Pusat Inovasi",
+                                "status": "publish",
+                                "tema": "Semua tema",
+                            })
                 except:
                     continue
         except:
@@ -143,7 +158,7 @@ def SubTopicAll(driver, wait):
     return comment_found
 
 
-def ScrapeFeedback(driver, wait):
+def ScrapeFeedback(driver, wait, judul):
     feedback_data = []
 
     try:
@@ -159,8 +174,14 @@ def ScrapeFeedback(driver, wait):
                         question = cols[3].text.strip()
                         if rating or question:
                             feedback_data.append({
-                                "question": question,
-                                "rating": rating
+                                "user_statement": question,
+                                "rating": rating,
+                                "kategori": "Smartclass",
+                                "pusat_inovasi": "Semua Pusat Inovasi",
+                                "status": "publish",
+                                "tema": "Semua tema",
+                                'judul': judul,
+                                'type': 'feedback'
                             })
                 except Exception as e:
                     print(f"X Gagal parsing baris: {e}")
@@ -192,25 +213,25 @@ def scraping_komentar(driver, wait):
 
     for index, url in enumerate(link_kelas, 1):
         try:
-            print(f"\n>>> Memproses kelas {index}: {url}")
+            print(f"\n>>> Memproses kelas {index}: {url['url']}")
             try:
-                driver.get(url)
+                driver.get(url['url'])
             except TimeoutException:
-                print(f"X Timeout saat membuka {url}")
+                print(f"X Timeout saat membuka {url['url']}")
                 continue
 
             OpenDiscussionTab(driver, wait)
-            comment_by_class = SubTopicAll(driver, wait)
+            comment_by_class = SubTopicAll(driver, wait, url['judul'])
             all_comments.extend(comment_by_class)
             print(f">>> Komentar diskusi: {len(comment_by_class)}")
 
             OpenFeedbackTab(driver, wait)
-            feedback_by_class = ScrapeFeedback(driver, wait)
+            feedback_by_class = ScrapeFeedback(driver, wait, url['judul'])
             all_feedbacks.extend(feedback_by_class)
             print(f"Feedback ditemukan: {len(feedback_by_class)}")
 
         except Exception as e:
-            print(f"!!! Gagal memproses kelas {url}: {e}")
+            print(f"!!! Gagal memproses kelas {url['url']}: {e}")
             continue
 
     with open("comments_by_classes.json", "w") as file:
