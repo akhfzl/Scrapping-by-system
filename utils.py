@@ -5,7 +5,7 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 from dotenv import load_dotenv
 import json, os
 import time
@@ -67,32 +67,51 @@ def CollectLinkDetail(driver, wait, count_pages):
     overal_link = []
 
     for page in range(count_pages):
+        print(f"🔄 Memproses halaman {page + 1}...")
         wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a.btn-detail")))
-        tombol_detail = driver.find_elements(By.CSS_SELECTOR, "a.btn-detail")
-        judul_kelas = driver.find_elements(By.CSS_SELECTOR, "h5.mt-0")
-        
-        for tombol, judul in zip(tombol_detail, judul_kelas):
-            href = tombol.get_attribute("href")
-            judul_txt = judul.text  
-            if href:
-                overal_link.append({"judul": judul_txt, "url": href})
 
-        print(f"Halaman {page + 1} selesai. Total link: {len(overal_link)}")
+        try:
+            tombol_detail = driver.find_elements(By.CSS_SELECTOR, "a.btn-detail")
+            judul_kelas = driver.find_elements(By.CSS_SELECTOR, "h5.mt-0")
+        except StaleElementReferenceException:
+            print("⚠️  Elemen stale, coba cari ulang...")
+            time.sleep(1)
+            tombol_detail = driver.find_elements(By.CSS_SELECTOR, "a.btn-detail")
+            judul_kelas = driver.find_elements(By.CSS_SELECTOR, "h5.mt-0")
+
+        for idx in range(min(len(tombol_detail), len(judul_kelas))):
+            try:
+                href = tombol_detail[idx].get_attribute("href")
+                judul_txt = judul_kelas[idx].text
+                if href:
+                    overal_link.append({"judul": judul_txt, "url": href})
+            except StaleElementReferenceException:
+                print("❌ Gagal ambil href, elemen stale.")
+                continue
+
+        print(f"✅ Halaman {page + 1} selesai. Total link terkumpul: {len(overal_link)}")
 
         if page < count_pages - 1:
             try:
                 tombol_next = wait.until(EC.element_to_be_clickable((By.ID, "table-kelas_next")))
                 if "disabled" in tombol_next.get_attribute("class") or not tombol_next.is_enabled():
-                    print("<STOP> Tombol next nonaktif.")
+                    print("⛔ Tombol next nonaktif. Berhenti.")
                     break
+
+                current_page = driver.find_element(By.CSS_SELECTOR, "li.paginate_button.active a").text
                 tombol_next.click()
-                time.sleep(2)
+
+                wait.until(
+                    lambda d: d.find_element(By.CSS_SELECTOR, "li.paginate_button.active a").text != current_page
+                )
+
             except Exception as e:
-                print("!!!! Gagal klik 'Next':", e)
+                print("🚫 Gagal klik 'Next':", e)
                 break
 
-    with open("overal_link_class.json", "w") as file:
-        json.dump(overal_link, file)
+    with open("overal_link_class.json", "w", encoding="utf-8") as file:
+        json.dump(overal_link, file, indent=2, ensure_ascii=False)
+
     return overal_link
 
 
@@ -116,8 +135,8 @@ def OpenFeedbackTab(driver, wait):
 
 def SubTopicAll(driver, wait, judul):
     comment_found = []
-    accordion_buttons = driver.find_elements(By.CSS_SELECTOR, '.accordion-button')
 
+    accordion_buttons = driver.find_elements(By.CSS_SELECTOR, '.accordion-button')
     for topik_btn in accordion_buttons:
         try:
             driver.execute_script("arguments[0].scrollIntoView(true);", topik_btn)
@@ -138,78 +157,98 @@ def SubTopicAll(driver, wait, judul):
                 try:
                     media_body = div.find_element(By.CLASS_NAME, "media-body")
                     ps = media_body.find_elements(By.TAG_NAME, "p")
-                    if len(ps) >= 2:
-                        komentar = ps[1].text.strip()
-                        if komentar:
-                            comment_found.append({
-                                'user_statement': komentar, 
-                                'judul': judul, 
-                                'rating': '', 
-                                'type': 'komentar/pertanyaan',
-                                "kategori": "Smartclass",
-                                "pusat_inovasi": "Semua Pusat Inovasi",
-                                "status": "publish",
-                                "tema": "Semua tema",
-                            })
+
+                    semua_komentar = "\n".join([p.text.strip() for p in ps if p.text.strip()])
+
+                    if semua_komentar:
+                        comment_found.append({
+                            'user_statement': semua_komentar,
+                            'judul': judul,
+                            'rating': '',
+                            'type': 'komentar/pertanyaan',
+                            "kategori": "Smartclass",
+                            "pusat_inovasi": "Semua Pusat Inovasi",
+                            "status": "publish",
+                            "tema": "Semua tema",
+                        })
                 except:
                     continue
         except:
             continue
-    return comment_found
 
+    return comment_found
 
 def ScrapeFeedback(driver, wait, judul):
     feedback_data = []
 
     try:
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#table-peserta-feedback tbody tr')))
+        wait.until(EC.presence_of_element_located((By.ID, "table-peserta-feedback")))
+
+        page_number = 1  
 
         while True:
-            rows = driver.find_elements(By.CSS_SELECTOR, '#table-peserta-feedback tbody tr')
+            print(f"[INFO] Halaman {page_number}...")
+
+            for _ in range(5):  
+                time.sleep(5)
+                rows = driver.find_elements(By.CSS_SELECTOR, "#table-peserta-feedback > tbody > tr")
+                rows_td = rows[0].find_elements(By.TAG_NAME, "td")
+                print('rows td -> ', rows_td)
+                if rows and len(rows_td) >= 4:
+                    print('break cols < 4')
+                    break
+                print("[WAIT] Menunggu baris muncul...")
+                time.sleep(5)
+            else:
+                print("[WARN] Tidak ada baris yang valid di halaman ini.")
+                break  
+
             for row in rows:
                 try:
-                    cols = row.find_elements(By.TAG_NAME, 'td')
+                    cols = row.find_elements(By.TAG_NAME, "td")
                     if len(cols) >= 4:
-                        rating = cols[2].text.strip()
-                        question = cols[3].text.strip()
-                        if rating or question:
+                        nilai = cols[2].text.strip()
+                        feedback = cols[3].text.strip()
+
+                        if nilai or feedback:
                             feedback_data.append({
-                                "user_statement": question,
-                                "rating": rating,
+                                "user_statement": feedback,
+                                "rating": nilai,
                                 "kategori": "Smartclass",
                                 "pusat_inovasi": "Semua Pusat Inovasi",
                                 "status": "publish",
                                 "tema": "Semua tema",
-                                'judul': judul,
-                                'type': 'feedback'
+                                "judul": judul,
+                                "type": "feedback"
                             })
                 except Exception as e:
-                    print(f"X Gagal parsing baris: {e}")
+                    print(f"[ERROR] Gagal parsing baris: {e}")
                     continue
 
             try:
                 next_button = driver.find_element(By.CSS_SELECTOR, "#table-peserta-feedback_next")
                 if "disabled" in next_button.get_attribute("class"):
-                    break  
+                    print("[INFO] Halaman terakhir, selesai.")
+                    break
                 else:
+                    first_row = rows[0]
                     next_button.click()
-                    time.sleep(1) 
-                    wait.until(EC.staleness_of(rows[0])) 
-            except:
-                break  
+                    wait.until(EC.staleness_of(first_row))
+                    page_number += 1
+            except Exception as e:
+                print(f"[WARN] Tombol next tidak ditemukan atau gagal klik: {e}")
+                break
 
     except Exception as e:
-        print(f"X Gagal mengambil data feedback: {e}")
+        print(f"[FATAL] Gagal mengambil data feedback: {e}")
 
     return feedback_data
-
-
 
 def scraping_komentar(driver, wait):
     all_comments = []
     all_feedbacks = []
 
-    link_kelas = CollectLinkDetail(driver, wait, 2)
+    link_kelas = CollectLinkDetail(driver, wait, 4)
 
     for index, url in enumerate(link_kelas, 1):
         try:
